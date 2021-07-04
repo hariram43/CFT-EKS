@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  EKS nodes (AMI family: AmazonLinux2, SSH access: false, private networking:
+  false) [created and managed by eksctl]
+Mappings:
+  ServicePrincipalPartitionMap:
+    aws:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-cn:
+      EC2: ec2.amazonaws.com.cn
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-us-gov:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+Resources:
+  EgressInterCluster:
+    Type: 'AWS::EC2::SecurityGroupEgress'
+    Properties:
+      Description: >-
+        Allow control plane to communicate with worker nodes in group
+        ng-f85eb9cf (kubelet and workload TCP ports)
+      DestinationSecurityGroupId: !Ref SG
+      FromPort: 1025
+      GroupId: !ImportValue 'eksctl-mediar-cluster::SecurityGroup'
+      IpProtocol: tcp
+      ToPort: 65535
+  EgressInterClusterAPI:
+    Type: 'AWS::EC2::SecurityGroupEgress'
+    Properties:
+      Description: >-
+        Allow control plane to communicate with worker nodes in group
+        ng-f85eb9cf (workloads using HTTPS port, commonly used with extension
+        API servers)
+      DestinationSecurityGroupId: !Ref SG
+      FromPort: 443
+      GroupId: !ImportValue 'eksctl-mediar-cluster::SecurityGroup'
+      IpProtocol: tcp
+      ToPort: 443
+  IngressInterClusterCP:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      Description: >-
+        Allow control plane to receive API requests from worker nodes in group
+        ng-f85eb9cf
+      FromPort: 443
+      GroupId: !ImportValue 'eksctl-mediar-cluster::SecurityGroup'
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SG
+      ToPort: 443
+  NodeGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateName: !Sub '${AWS::StackName}'
+        Version: !GetAtt 
+          - NodeGroupLaunchTemplate
+          - LatestVersionNumber
+      MaxSize: '2'
+      MinSize: '2'
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: 'true'
+          Value: mediar-ng-f85eb9cf-Node
+        - Key: kubernetes.io/cluster/mediar
+          PropagateAtLaunch: 'true'
+          Value: owned
+      VPCZoneIdentifier: !Split 
+        - ','
+        - !ImportValue 'eksctl-mediar-cluster::SubnetsPublic'
+    UpdatePolicy:
+      AutoScalingRollingUpdate: {}
+  NodeGroupLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              Encrypted: false
+              Iops: 3000
+              Throughput: 125
+              VolumeSize: 80
+              VolumeType: gp3
+        IamInstanceProfile:
+          Arn: !GetAtt 
+            - NodeInstanceProfile
+            - Arn
+        ImageId: ami-0fd7c89d0b6eff8f6
+        InstanceType: m5.large
+        MetadataOptions:
+          HttpPutResponseHopLimit: 2
+          HttpTokens: optional
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            Groups:
+              - !ImportValue 'eksctl-mediar-cluster::SharedNodeSecurityGroup'
+              - !Ref SG
+            NetworkCardIndex: 0
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: mediar-ng-f85eb9cf-Node
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: mediar-ng-f85eb9cf-Node
+          - ResourceType: network-interface
+            Tags:
+              - Key: Name
+                Value: mediar-ng-f85eb9cf-Node
+        UserData: >-
+          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
+      LaunchTemplateName: !Sub '${AWS::StackName}'
+  NodeInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref NodeInstanceRole
+  NodeInstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - !FindInMap 
+                  - ServicePrincipalPartitionMap
+                  - !Ref 'AWS::Partition'
+                  - EC2
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub >-
+          arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy'
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}/NodeInstanceRole'
+  SG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Communication between the control plane and worker nodes in group
+        ng-f85eb9cf
+      SecurityGroupIngress:
+        - Description: >-
+            [IngressInterCluster] Allow worker nodes in group ng-f85eb9cf to
+            communicate with control plane (kubelet and workload TCP ports)
+          FromPort: 1025
+          IpProtocol: tcp
+          SourceSecurityGroupId: !ImportValue 'eksctl-mediar-cluster::SecurityGroup'
+          ToPort: 65535
+        - Description: >-
+            [IngressInterClusterAPI] Allow worker nodes in group ng-f85eb9cf to
+            communicate with control plane (workloads using HTTPS port, commonly
+            used with extension API servers)
+          FromPort: 443
+          IpProtocol: tcp
+          SourceSecurityGroupId: !ImportValue 'eksctl-mediar-cluster::SecurityGroup'
+          ToPort: 443
+      Tags:
+        - Key: kubernetes.io/cluster/mediar
+          Value: owned
+        - Key: Name
+          Value: !Sub '${AWS::StackName}/SG'
+      VpcId: !ImportValue 'eksctl-mediar-cluster::VPC'
+Outputs:
+  FeatureLocalSecurityGroup:
+    Value: true
+  FeaturePrivateNetworking:
+    Value: false
+  FeatureSharedSecurityGroup:
+    Value: true
+  InstanceProfileARN:
+    Value: !GetAtt 
+      - NodeInstanceProfile
+      - Arn
+    Export:
+      Name: !Sub '${AWS::StackName}::InstanceProfileARN'
+  InstanceRoleARN:
+    Value: !GetAtt 
+      - NodeInstanceRole
+      - Arn
+    Export:
+      Name: !Sub '${AWS::StackName}::InstanceRoleARN'
+
